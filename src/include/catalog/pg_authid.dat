@@ -50,7 +50,7 @@
   rolreplication => 'f', rolbypassrls => 'f', rolconnlimit => '-1',
   rolpassword => '_null_', rolvaliduntil => '_null_' },
 { oid => '3375', oid_symbol => 'ROLE_PG_READ_ALL_STATS',
-  rolname => 'pg_read_all_stats', rolsuper => 'f', rolinherit => 't',
+  rolname => 'mdb_admin', rolsuper => 'f', rolinherit => 't',
   rolcreaterole => 'f', rolcreatedb => 'f', rolcanlogin => 'f',
   rolreplication => 'f', rolbypassrls => 'f', rolconnlimit => '-1',
   rolpassword => '_null_', rolvaliduntil => '_null_' },

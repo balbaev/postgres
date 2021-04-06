@@ -372,10 +372,10 @@ CreateSubscription(CreateSubscriptionStmt *stmt, bool isTopLevel)
 	if (create_slot)
 		PreventInTransactionBlock(isTopLevel, "CREATE SUBSCRIPTION ... WITH (create_slot = true)");
 
-	if (!superuser())
+	if (!superuser() || !is_member_of_role(GetUserId(), ROLE_PG_READ_ALL_STATS))
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 errmsg("must be superuser to create subscriptions")));
+				 errmsg("must be mdb_admin to create subscriptions")));
 
 	/*
 	 * If built with appropriate switch, whine when regression-testing
@@ -1385,12 +1385,12 @@ AlterSubscriptionOwner_internal(Relation rel, HeapTuple tup, Oid newOwnerId)
 					   NameStr(form->subname));
 
 	/* New owner must be a superuser */
-	if (!superuser_arg(newOwnerId))
+	if (!superuser_arg(newOwnerId) || !is_member_of_role(newOwnerId, ROLE_PG_READ_ALL_STATS))
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("permission denied to change owner of subscription \"%s\"",
 						NameStr(form->subname)),
-				 errhint("The owner of a subscription must be a superuser.")));
+				 errhint("The owner of a subscription must be an mdb_admin.")));
 
 	form->subowner = newOwnerId;
 	CatalogTupleUpdate(rel, &tup->t_self, tup);
