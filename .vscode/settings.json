@@ -1,0 +1,7 @@
+{
+    "files.associations": {
+        "pg_authid.h": "c",
+        "builtins.h": "c",
+        "slot.h": "c"
+    }
+}

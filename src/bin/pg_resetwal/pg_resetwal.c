@@ -75,7 +75,9 @@ static uint32 minXlogTli = 0;
 static XLogSegNo minXlogSegNo = 0;
 static int	WalSegSz;
 static int	set_wal_segsize;
+static uint64 set_sysid = 0;
 
+static uint64 GenerateSystemIdentifier(void);
 static void CheckDataVersion(void);
 static bool ReadControlFile(void);
 static void GuessControlValues(void);
@@ -137,7 +139,7 @@ main(int argc, char *argv[])
 	}
 
 
-	while ((c = getopt_long(argc, argv, "c:D:e:fl:m:no:O:u:x:", long_options, NULL)) != -1)
+	while ((c = getopt_long(argc, argv, "c:D:e:fl:m:no:O:u:x:s::", long_options, NULL)) != -1)
 	{
 		switch (c)
 		{
@@ -328,6 +330,22 @@ main(int argc, char *argv[])
 				}
 				break;
 
+			case 's':
+				if (optarg)
+				{
+					if (sscanf(optarg, UINT64_FORMAT, &set_sysid) != 1)
+					{
+						fprintf(stderr, _("%s: invalid argument for option -s\n"), progname);
+						fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
+						exit(1);
+					}
+				}
+				else
+				{
+					set_sysid = GenerateSystemIdentifier();
+				}
+				break;
+
 			default:
 				fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
 				exit(1);
@@ -492,6 +510,9 @@ main(int argc, char *argv[])
 	if (minXlogSegNo > newXlogSegNo)
 		newXlogSegNo = minXlogSegNo;
 
+	if (set_sysid != 0)
+		ControlFile.system_identifier = set_sysid;
+
 	/*
 	 * If we had to guess anything, and -f was not given, just print the
 	 * guessed values and exit.  Also print if -n is given.
@@ -597,6 +618,26 @@ CheckDataVersion(void)
 
 
 /*
+ * Create a new unique installation identifier.
+ *
+ * See notes in resetwal.c about the algorithm.
+ */
+static uint64
+GenerateSystemIdentifier(void)
+{
+	uint64 sysidentifier;
+	struct timeval tv;
+
+	gettimeofday(&tv, NULL);
+	sysidentifier = ((uint64) tv.tv_sec) << 32;
+	sysidentifier |= ((uint64) tv.tv_usec) << 12;
+	sysidentifier |= getpid() & 0xFFF;
+
+	return sysidentifier;
+}
+
+
+/*
  * Try to read the existing pg_control file.
  *
  * This routine is also responsible for updating old pg_control versions
@@ -687,9 +728,6 @@ ReadControlFile(void)
 static void
 GuessControlValues(void)
 {
-	uint64		sysidentifier;
-	struct timeval tv;
-
 	/*
 	 * Set up a completely default set of pg_control values.
 	 */
@@ -701,14 +739,14 @@ GuessControlValues(void)
 
 	/*
 	 * Create a new unique installation identifier, since we can no longer use
-	 * any old XLOG records.  See notes in xlog.c about the algorithm.
+	 * any old XLOG records.
 	 */
 	gettimeofday(&tv, NULL);
 	sysidentifier = ((uint64) tv.tv_sec) << 32;
 	sysidentifier |= ((uint64) tv.tv_usec) << 12;
 	sysidentifier |= getpid() & 0xFFF;
 
-	ControlFile.system_identifier = sysidentifier;
+	ControlFile.system_identifier = GenerateSystemIdentifier();
 
 	ControlFile.checkPointCopy.redo = SizeOfXLogLongPHD;
 	ControlFile.checkPointCopy.ThisTimeLineID = 1;
@@ -1332,6 +1370,7 @@ usage(void)
 	printf(_("  -O, --multixact-offset=OFFSET    set next multitransaction offset\n"));
 	printf(_("  -u, --oldest-transaction-id=XID  set oldest transaction ID\n"));
 	printf(_("  -V, --version                    output version information, then exit\n"));
+	printf(_("  -s [SYSID]       set system identifier (or generate one)\n"));
 	printf(_("  -x, --next-transaction-id=XID    set next transaction ID\n"));
 	printf(_("      --wal-segsize=SIZE           size of WAL segments, in megabytes\n"));
 	printf(_("  -?, --help                       show this help, then exit\n"));
