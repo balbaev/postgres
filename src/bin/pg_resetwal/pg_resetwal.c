@@ -107,6 +107,7 @@ main(int argc, char *argv[])
 		{"oldest-transaction-id", required_argument, NULL, 'u'},
 		{"next-transaction-id", required_argument, NULL, 'x'},
 		{"wal-segsize", required_argument, NULL, 1},
+		{"sysid", required_argument, NULL, 's'},
 		{NULL, 0, NULL, 0}
 	};
 
@@ -139,7 +140,7 @@ main(int argc, char *argv[])
 	}
 
 
-	while ((c = getopt_long(argc, argv, "c:D:e:fl:m:no:O:u:x:s::", long_options, NULL)) != -1)
+	while ((c = getopt_long(argc, argv, "c:D:e:fl:m:no:O:u:x:s:", long_options, NULL)) != -1)
 	{
 		switch (c)
 		{
@@ -331,7 +332,7 @@ main(int argc, char *argv[])
 				break;
 
 			case 's':
-				if (optarg)
+				if (endptr == optarg || *endptr != '\0')
 				{
 					if (sscanf(optarg, UINT64_FORMAT, &set_sysid) != 1)
 					{
@@ -1366,7 +1367,7 @@ usage(void)
 	printf(_("  -O, --multixact-offset=OFFSET    set next multitransaction offset\n"));
 	printf(_("  -u, --oldest-transaction-id=XID  set oldest transaction ID\n"));
 	printf(_("  -V, --version                    output version information, then exit\n"));
-	printf(_("  -s [SYSID]       set system identifier (or generate one)\n"));
+	printf(_("  -s [SYSID]						 set system identifier (or generate one)\n"));
 	printf(_("  -x, --next-transaction-id=XID    set next transaction ID\n"));
 	printf(_("      --wal-segsize=SIZE           size of WAL segments, in megabytes\n"));
 	printf(_("  -?, --help                       show this help, then exit\n"));
