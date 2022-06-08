@@ -741,10 +741,6 @@ GuessControlValues(void)
 	 * Create a new unique installation identifier, since we can no longer use
 	 * any old XLOG records.
 	 */
-	gettimeofday(&tv, NULL);
-	sysidentifier = ((uint64) tv.tv_sec) << 32;
-	sysidentifier |= ((uint64) tv.tv_usec) << 12;
-	sysidentifier |= getpid() & 0xFFF;
 
 	ControlFile.system_identifier = GenerateSystemIdentifier();
 
