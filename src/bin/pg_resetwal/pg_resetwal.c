@@ -1367,7 +1367,7 @@ usage(void)
 	printf(_("  -O, --multixact-offset=OFFSET    set next multitransaction offset\n"));
 	printf(_("  -u, --oldest-transaction-id=XID  set oldest transaction ID\n"));
 	printf(_("  -V, --version                    output version information, then exit\n"));
-	printf(_("  -s [SYSID]						 set system identifier (or generate one)\n"));
+	printf(_("  -s [SYSID]                       set system identifier (or generate one)\n"));
 	printf(_("  -x, --next-transaction-id=XID    set next transaction ID\n"));
 	printf(_("      --wal-segsize=SIZE           size of WAL segments, in megabytes\n"));
 	printf(_("  -?, --help                       show this help, then exit\n"));
