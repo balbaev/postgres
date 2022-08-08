@@ -238,6 +238,13 @@ static bool completion_force_quote; /* true to force-quote filenames */
  *	  QUERY_PLUS forms combine such literal lists with a query result.
  * 4) The list of attributes of the given table (possibly schema-qualified).
  * 5) The list of arguments to the given function (possibly schema-qualified).
+ *
+ * The query is generally expected to return raw SQL identifiers; matching
+ * to what the user typed is done in a quoting-aware fashion.  If what is
+ * returned is not SQL identifiers, use one of the VERBATIM forms, in which
+ * case the query results are matched to the user's text without double-quote
+ * processing (so if quoting is needed, you must provide it in the query
+ * results).
  */
 #define COMPLETE_WITH_QUERY(query) \
 	COMPLETE_WITH_QUERY_LIST(query, NULL)
@@ -992,7 +999,7 @@ static const SchemaQuery Query_for_trigger_of_table = {
 #define Query_for_list_of_encodings \
 " SELECT DISTINCT pg_catalog.pg_encoding_to_char(conforencoding) "\
 "   FROM pg_catalog.pg_conversion "\
-"  WHERE pg_catalog.pg_encoding_to_char(conforencoding) LIKE UPPER('%s')"
+"  WHERE pg_catalog.pg_encoding_to_char(conforencoding) LIKE pg_catalog.upper('%s')"
 
 #define Query_for_list_of_languages \
 "SELECT lanname "\
@@ -1076,19 +1083,10 @@ static const SchemaQuery Query_for_trigger_of_table = {
 "   FROM pg_catalog.pg_available_extensions "\
 "  WHERE name LIKE '%s' AND installed_version IS NULL"
 
-/* the result of this query is not an identifier, so use VERBATIM */
 #define Query_for_list_of_available_extension_versions \
 " SELECT version "\
 "   FROM pg_catalog.pg_available_extension_versions "\
-"  WHERE version LIKE '%s'"\
-"    AND name='%s'"
-
-/* the result of this query is not an identifier, so use VERBATIM */
-#define Query_for_list_of_available_extension_versions_with_TO \
-" SELECT 'TO ' || version "\
-"   FROM pg_catalog.pg_available_extension_versions "\
-"  WHERE ('TO ' || version) LIKE '%s'"\
-"    AND name='%s'"
+"  WHERE version LIKE '%s' AND name='%s'"
 
 #define Query_for_list_of_prepared_statements \
 " SELECT name "\
@@ -1875,7 +1873,8 @@ psql_completion(const char *text, int start, int end)
 		COMPLETE_WITH("(", "PUBLICATION");
 	/* ALTER SUBSCRIPTION <name> SET ( */
 	else if (HeadMatches("ALTER", "SUBSCRIPTION", MatchAny) && TailMatches("SET", "("))
-		COMPLETE_WITH("binary", "slot_name", "streaming", "synchronous_commit", "disable_on_error");
+		COMPLETE_WITH("binary", "disable_on_error", "origin", "slot_name",
+					  "streaming", "synchronous_commit");
 	/* ALTER SUBSCRIPTION <name> SKIP ( */
 	else if (HeadMatches("ALTER", "SUBSCRIPTION", MatchAny) && TailMatches("SKIP", "("))
 		COMPLETE_WITH("lsn");
@@ -1933,16 +1932,13 @@ psql_completion(const char *text, int start, int end)
 
 	/* ALTER EXTENSION <name> UPDATE */
 	else if (Matches("ALTER", "EXTENSION", MatchAny, "UPDATE"))
-	{
-		set_completion_reference(prev2_wd);
-		COMPLETE_WITH_QUERY_VERBATIM(Query_for_list_of_available_extension_versions_with_TO);
-	}
+		COMPLETE_WITH("TO");
 
 	/* ALTER EXTENSION <name> UPDATE TO */
 	else if (Matches("ALTER", "EXTENSION", MatchAny, "UPDATE", "TO"))
 	{
 		set_completion_reference(prev3_wd);
-		COMPLETE_WITH_QUERY_VERBATIM(Query_for_list_of_available_extension_versions);
+		COMPLETE_WITH_QUERY(Query_for_list_of_available_extension_versions);
 	}
 
 	/* ALTER FOREIGN */
@@ -2819,7 +2815,7 @@ psql_completion(const char *text, int start, int end)
 	else if (Matches("CREATE", "EXTENSION", MatchAny, "VERSION"))
 	{
 		set_completion_reference(prev2_wd);
-		COMPLETE_WITH_QUERY_VERBATIM(Query_for_list_of_available_extension_versions);
+		COMPLETE_WITH_QUERY(Query_for_list_of_available_extension_versions);
 	}
 
 	/* CREATE FOREIGN */
@@ -3157,8 +3153,8 @@ psql_completion(const char *text, int start, int end)
 	/* Complete "CREATE SUBSCRIPTION <name> ...  WITH ( <opt>" */
 	else if (HeadMatches("CREATE", "SUBSCRIPTION") && TailMatches("WITH", "("))
 		COMPLETE_WITH("binary", "connect", "copy_data", "create_slot",
-					  "enabled", "slot_name", "streaming",
-					  "synchronous_commit", "two_phase", "disable_on_error");
+					  "disable_on_error", "enabled", "origin", "slot_name",
+					  "streaming", "synchronous_commit", "two_phase");
 
 /* CREATE TRIGGER --- is allowed inside CREATE SCHEMA, so use TailMatches */
 
@@ -4658,13 +4654,16 @@ psql_completion(const char *text, int start, int end)
 						 "tableattr", "title", "tuples_only",
 						 "unicode_border_linestyle",
 						 "unicode_column_linestyle",
-						 "unicode_header_linestyle");
+						 "unicode_header_linestyle",
+						 "xheader_width");
 	else if (TailMatchesCS("\\pset", MatchAny))
 	{
 		if (TailMatchesCS("format"))
 			COMPLETE_WITH_CS("aligned", "asciidoc", "csv", "html", "latex",
 							 "latex-longtable", "troff-ms", "unaligned",
 							 "wrapped");
+		else if (TailMatchesCS("xheader_width"))
+			COMPLETE_WITH_CS("full", "column", "page");
 		else if (TailMatchesCS("linestyle"))
 			COMPLETE_WITH_CS("ascii", "old-ascii", "unicode");
 		else if (TailMatchesCS("pager"))
@@ -4759,11 +4758,9 @@ psql_completion(const char *text, int start, int end)
 	free(previous_words);
 	free(words_buffer);
 	free(text_copy);
-	if (completion_ref_object)
-		free(completion_ref_object);
+	free(completion_ref_object);
 	completion_ref_object = NULL;
-	if (completion_ref_schema)
-		free(completion_ref_schema);
+	free(completion_ref_schema);
 	completion_ref_schema = NULL;
 
 	/* Return our Grand List O' Matches */
@@ -5164,13 +5161,12 @@ _complete_from_query(const char *simple_query,
 
 		/* Clean up */
 		termPQExpBuffer(&query_buffer);
+		free(schemaname);
+		free(objectname);
 		free(e_object_like);
-		if (e_schemaname)
-			free(e_schemaname);
-		if (e_ref_object)
-			free(e_ref_object);
-		if (e_ref_schema)
-			free(e_ref_schema);
+		free(e_schemaname);
+		free(e_ref_object);
+		free(e_ref_schema);
 	}
 
 	/* Return the next result, if any, but not if the query failed */

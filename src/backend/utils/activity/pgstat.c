@@ -73,6 +73,7 @@
  * - pgstat_database.c
  * - pgstat_function.c
  * - pgstat_relation.c
+ * - pgstat_replslot.c
  * - pgstat_slru.c
  * - pgstat_subscription.c
  * - pgstat_wal.c
@@ -183,7 +184,7 @@ static inline bool pgstat_is_kind_valid(int ikind);
  */
 
 bool		pgstat_track_counts = false;
-int			pgstat_fetch_consistency = PGSTAT_FETCH_CONSISTENCY_NONE;
+int			pgstat_fetch_consistency = PGSTAT_FETCH_CONSISTENCY_CACHE;
 
 
 /* ----------
@@ -570,7 +571,7 @@ pgstat_report_stat(bool force)
 	bool		nowait;
 
 	pgstat_assert_is_up();
-	Assert(!IsTransactionBlock());
+	Assert(!IsTransactionOrTransactionBlock());
 
 	/* "absorb" the forced flush even if there's nothing to flush */
 	if (pgStatForceNextFlush)

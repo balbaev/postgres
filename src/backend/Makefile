@@ -101,15 +101,7 @@ postgres: $(POSTGRES_IMP)
 
 $(POSTGRES_IMP): $(OBJS)
 	$(LD) $(LDREL) $(LDOUT) SUBSYS.o $(call expand_subsys,$^)
-ifeq ($(host_os), aix3.2.5)
-	$(MKLDEXPORT) SUBSYS.o $(bindir)/postgres > $@
-else
-ifneq (,$(findstring aix4.1, $(host_os)))
-	$(MKLDEXPORT) SUBSYS.o $(bindir)/postgres > $@
-else
 	$(MKLDEXPORT) SUBSYS.o . > $@
-endif
-endif
 	@rm -f SUBSYS.o
 
 endif # aix
@@ -144,10 +136,14 @@ submake-catalog-headers:
 	$(MAKE) -C catalog distprep generated-header-symlinks
 
 # run this unconditionally to avoid needing to know its dependencies here:
+submake-nodes-headers:
+	$(MAKE) -C nodes distprep generated-header-symlinks
+
+# run this unconditionally to avoid needing to know its dependencies here:
 submake-utils-headers:
 	$(MAKE) -C utils distprep generated-header-symlinks
 
-.PHONY: submake-catalog-headers submake-utils-headers
+.PHONY: submake-catalog-headers submake-nodes-headers submake-utils-headers
 
 # Make symlinks for these headers in the include directory. That way
 # we can cut down on the -I options. Also, a symlink is automatically
@@ -162,7 +158,7 @@ submake-utils-headers:
 
 .PHONY: generated-headers
 
-generated-headers: $(top_builddir)/src/include/parser/gram.h $(top_builddir)/src/include/storage/lwlocknames.h submake-catalog-headers submake-utils-headers
+generated-headers: $(top_builddir)/src/include/parser/gram.h $(top_builddir)/src/include/storage/lwlocknames.h submake-catalog-headers submake-nodes-headers submake-utils-headers
 
 $(top_builddir)/src/include/parser/gram.h: parser/gram.h
 	prereqdir=`cd '$(dir $<)' >/dev/null && pwd` && \
@@ -185,6 +181,7 @@ distprep:
 	$(MAKE) -C parser	gram.c gram.h scan.c
 	$(MAKE) -C bootstrap	bootparse.c bootscanner.c
 	$(MAKE) -C catalog	distprep
+	$(MAKE) -C nodes	distprep
 	$(MAKE) -C replication	repl_gram.c repl_scanner.c syncrep_gram.c syncrep_scanner.c
 	$(MAKE) -C storage/lmgr	lwlocknames.h lwlocknames.c
 	$(MAKE) -C utils	distprep
@@ -297,6 +294,7 @@ distclean: clean
 
 maintainer-clean: distclean
 	$(MAKE) -C catalog $@
+	$(MAKE) -C nodes $@
 	$(MAKE) -C utils $@
 	rm -f bootstrap/bootparse.c \
 	      bootstrap/bootscanner.c \

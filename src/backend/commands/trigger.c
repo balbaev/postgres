@@ -295,13 +295,6 @@ CreateTriggerFiringOn(CreateTrigStmt *stmt, const char *queryString,
 							RelationGetRelationName(rel)),
 					 errdetail("Foreign tables cannot have INSTEAD OF triggers.")));
 
-		if (TRIGGER_FOR_TRUNCATE(stmt->events))
-			ereport(ERROR,
-					(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-					 errmsg("\"%s\" is a foreign table",
-							RelationGetRelationName(rel)),
-					 errdetail("Foreign tables cannot have TRUNCATE triggers.")));
-
 		/*
 		 * We disallow constraint triggers to protect the assumption that
 		 * triggers on FKs can't be deferred.  See notes with AfterTriggers
@@ -1759,6 +1752,7 @@ renametrig_partition(Relation tgrel, Oid partitionId, Oid parentTriggerOid,
  *			   enablement/disablement, this also defines when the trigger
  *			   should be fired in session replication roles.
  * skip_system: if true, skip "system" triggers (constraint triggers)
+ * recurse: if true, recurse to partitions
  *
  * Caller should have checked permissions for the table; here we also
  * enforce that superuser privilege is required to alter the state of
@@ -1766,7 +1760,8 @@ renametrig_partition(Relation tgrel, Oid partitionId, Oid parentTriggerOid,
  */
 void
 EnableDisableTrigger(Relation rel, const char *tgname,
-					 char fires_when, bool skip_system, LOCKMODE lockmode)
+					 char fires_when, bool skip_system, bool recurse,
+					 LOCKMODE lockmode)
 {
 	Relation	tgrel;
 	int			nkeys;
@@ -1830,6 +1825,34 @@ EnableDisableTrigger(Relation rel, const char *tgname,
 			heap_freetuple(newtup);
 
 			changed = true;
+		}
+
+		/*
+		 * When altering FOR EACH ROW triggers on a partitioned table, do the
+		 * same on the partitions as well, unless ONLY is specified.
+		 *
+		 * Note that we recurse even if we didn't change the trigger above,
+		 * because the partitions' copy of the trigger may have a different
+		 * value of tgenabled than the parent's trigger and thus might need to
+		 * be changed.
+		 */
+		if (recurse &&
+			rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE &&
+			(TRIGGER_FOR_ROW(oldtrig->tgtype)))
+		{
+			PartitionDesc partdesc = RelationGetPartitionDesc(rel, true);
+			int			i;
+
+			for (i = 0; i < partdesc->nparts; i++)
+			{
+				Relation	part;
+
+				part = relation_open(partdesc->oids[i], lockmode);
+				EnableDisableTrigger(part, NameStr(oldtrig->tgname),
+									 fires_when, skip_system, recurse,
+									 lockmode);
+				table_close(part, NoLock);	/* keep lock till commit */
+			}
 		}
 
 		InvokeObjectPostAlterHook(TriggerRelationId,

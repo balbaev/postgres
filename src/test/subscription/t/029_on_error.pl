@@ -48,7 +48,7 @@ sub test_skip_lsn
 	# Check the log to ensure that the transaction is skipped, and advance the
 	# offset of the log file for the next test.
 	$offset = $node_subscriber->wait_for_log(
-		qr/LOG:  done skipping logical replication transaction finished at $lsn/,
+		qr/LOG: ( [A-Z0-9]+:)? done skipping logical replication transaction finished at $lsn/,
 		$offset);
 
 	# Insert non-conflict data
@@ -124,10 +124,7 @@ $node_subscriber->safe_psql('postgres', "TRUNCATE tbl");
 $node_subscriber->safe_psql('postgres', "ALTER SUBSCRIPTION sub ENABLE");
 
 # Wait for the data to replicate.
-$node_publisher->wait_for_catchup('sub');
-$node_subscriber->poll_query_until('postgres',
-	"SELECT COUNT(1) = 0 FROM pg_subscription_rel sr WHERE sr.srsubstate NOT IN ('s', 'r') AND sr.srrelid = 'tbl'::regclass"
-);
+$node_subscriber->wait_for_subscription_sync($node_publisher, 'sub');
 
 # Confirm that we have finished the table sync.
 my $result =

@@ -20,18 +20,7 @@ $node_subscriber->append_conf('postgresql.conf',
 $node_subscriber->start;
 
 my $publisher_connstr = $node_publisher->connstr . ' dbname=postgres';
-
-sub wait_for_subscription_sync
-{
-	my ($node) = @_;
-
-	# Also wait for initial table sync to finish
-	my $synced_query =
-	  "SELECT count(1) = 0 FROM pg_subscription_rel WHERE srsubstate NOT IN ('r', 's');";
-
-	$node->poll_query_until('postgres', $synced_query)
-	  or die "Timed out while waiting for subscriber to synchronize data";
-}
+my $offset            = 0;
 
 # setup tables on both nodes
 
@@ -159,7 +148,7 @@ $node_subscriber->safe_psql(
 	CREATE SUBSCRIPTION sub1 CONNECTION '$publisher_connstr' PUBLICATION pub1
 ));
 
-wait_for_subscription_sync($node_subscriber);
+$node_subscriber->wait_for_subscription_sync;
 
 # tab1: only (a,b) is replicated
 $result =
@@ -332,7 +321,7 @@ $node_subscriber->safe_psql('postgres',
 
 # wait for the tablesync to complete, add a bit more data and then check
 # the results of the replication
-wait_for_subscription_sync($node_subscriber);
+$node_subscriber->wait_for_subscription_sync;
 
 $node_publisher->safe_psql(
 	'postgres', qq(
@@ -361,13 +350,13 @@ is( $result, qq(1|abc
 2|xyz), 'update on column tab2.c is not replicated');
 
 
-# TEST: add a table to two publications with different column lists, and
+# TEST: add a table to two publications with same column lists, and
 # create a single subscription replicating both publications
 $node_publisher->safe_psql(
 	'postgres', qq(
 	CREATE TABLE tab5 (a int PRIMARY KEY, b int, c int, d int);
 	CREATE PUBLICATION pub2 FOR TABLE tab5 (a, b);
-	CREATE PUBLICATION pub3 FOR TABLE tab5 (a, d);
+	CREATE PUBLICATION pub3 FOR TABLE tab5 (a, b);
 
 	-- insert a couple initial records
 	INSERT INTO tab5 VALUES (1, 11, 111, 1111);
@@ -384,12 +373,9 @@ $node_subscriber->safe_psql(
 	ALTER SUBSCRIPTION sub1 SET PUBLICATION pub2, pub3
 ));
 
-wait_for_subscription_sync($node_subscriber);
+$node_subscriber->wait_for_subscription_sync($node_publisher, 'sub1');
 
-$node_publisher->wait_for_catchup('sub1');
-
-# insert data and make sure all the columns (union of the columns lists)
-# get fully replicated
+# insert data and make sure the columns in column list get fully replicated
 $node_publisher->safe_psql(
 	'postgres', qq(
 	INSERT INTO tab5 VALUES (3, 33, 333, 3333);
@@ -399,42 +385,12 @@ $node_publisher->safe_psql(
 $node_publisher->wait_for_catchup('sub1');
 
 is( $node_subscriber->safe_psql('postgres', "SELECT * FROM tab5 ORDER BY a"),
-	qq(1|11|1111
-2|22|2222
-3|33|3333
-4|44|4444),
+	qq(1|11|
+2|22|
+3|33|
+4|44|),
 	'overlapping publications with overlapping column lists');
 
-# and finally, remove the column list for one of the publications, which
-# means replicating all columns (removing the column list), but first add
-# the missing column to the table on subscriber
-$node_publisher->safe_psql(
-	'postgres', qq(
-	ALTER PUBLICATION pub3 SET TABLE tab5;
-));
-
-$node_subscriber->safe_psql(
-	'postgres', qq(
-	ALTER SUBSCRIPTION sub1 REFRESH PUBLICATION;
-	ALTER TABLE tab5 ADD COLUMN c INT;
-));
-
-wait_for_subscription_sync($node_subscriber);
-
-$node_publisher->safe_psql(
-	'postgres', qq(
-	INSERT INTO tab5 VALUES (5, 55, 555, 5555);
-));
-
-$node_publisher->wait_for_catchup('sub1');
-
-is( $node_subscriber->safe_psql('postgres', "SELECT * FROM tab5 ORDER BY a"),
-	qq(1|11|1111|
-2|22|2222|
-3|33|3333|
-4|44|4444|
-5|55|5555|555),
-	'overlapping publications with overlapping column lists');
 
 # TEST: create a table with a column list, then change the replica
 # identity by replacing a primary key (but use a different column in
@@ -458,7 +414,7 @@ $node_subscriber->safe_psql(
 	ALTER SUBSCRIPTION sub1 SET PUBLICATION pub4
 ));
 
-wait_for_subscription_sync($node_subscriber);
+$node_subscriber->wait_for_subscription_sync;
 
 $node_publisher->safe_psql(
 	'postgres', qq(
@@ -495,7 +451,7 @@ $node_subscriber->safe_psql(
 	ALTER SUBSCRIPTION sub1 REFRESH PUBLICATION
 ));
 
-wait_for_subscription_sync($node_subscriber);
+$node_subscriber->wait_for_subscription_sync;
 
 $node_publisher->safe_psql(
 	'postgres', qq(
@@ -534,7 +490,7 @@ $node_subscriber->safe_psql(
 	ALTER SUBSCRIPTION sub1 SET PUBLICATION pub5
 ));
 
-wait_for_subscription_sync($node_subscriber);
+$node_subscriber->wait_for_subscription_sync;
 
 $node_publisher->safe_psql(
 	'postgres', qq(
@@ -651,7 +607,7 @@ $node_subscriber->safe_psql(
 	ALTER SUBSCRIPTION sub1 SET PUBLICATION pub6
 ));
 
-wait_for_subscription_sync($node_subscriber);
+$node_subscriber->wait_for_subscription_sync;
 
 $node_publisher->safe_psql(
 	'postgres', qq(
@@ -717,7 +673,7 @@ $node_subscriber->safe_psql(
 	ALTER SUBSCRIPTION sub1 SET PUBLICATION pub7
 ));
 
-wait_for_subscription_sync($node_subscriber);
+$node_subscriber->wait_for_subscription_sync;
 
 $node_publisher->safe_psql(
 	'postgres', qq(
@@ -788,7 +744,7 @@ $node_subscriber->safe_psql(
 	CREATE SUBSCRIPTION sub1 CONNECTION '$publisher_connstr' PUBLICATION pub8;
 ));
 
-wait_for_subscription_sync($node_subscriber);
+$node_subscriber->wait_for_subscription_sync;
 
 $node_publisher->safe_psql(
 	'postgres', qq(
@@ -825,7 +781,7 @@ $node_subscriber->safe_psql(
 	TRUNCATE test_part_c;
 ));
 
-wait_for_subscription_sync($node_subscriber);
+$node_subscriber->wait_for_subscription_sync;
 
 $node_publisher->safe_psql(
 	'postgres', qq(
@@ -885,7 +841,7 @@ $node_subscriber->safe_psql(
 	ALTER SUBSCRIPTION sub1 SET PUBLICATION pub9
 ));
 
-wait_for_subscription_sync($node_subscriber);
+$node_subscriber->wait_for_subscription_sync;
 
 $node_publisher->safe_psql(
 	'postgres', qq(
@@ -900,57 +856,21 @@ is( $node_subscriber->safe_psql(
 3|),
 	'partitions with different replica identities not replicated correctly');
 
-# TEST: With a table included in multiple publications, we should use a
-# union of the column lists. So with column lists (a,b) and (a,c) we
-# should replicate (a,b,c).
 
-$node_publisher->safe_psql(
-	'postgres', qq(
-	CREATE TABLE test_mix_1 (a int PRIMARY KEY, b int, c int);
-	CREATE PUBLICATION pub_mix_1 FOR TABLE test_mix_1 (a, b);
-	CREATE PUBLICATION pub_mix_2 FOR TABLE test_mix_1 (a, c);
-
-	-- initial data
-	INSERT INTO test_mix_1 VALUES (1, 2, 3);
-));
-
-$node_subscriber->safe_psql(
-	'postgres', qq(
-	CREATE TABLE test_mix_1 (a int PRIMARY KEY, b int, c int);
-	ALTER SUBSCRIPTION sub1 SET PUBLICATION pub_mix_1, pub_mix_2;
-));
-
-wait_for_subscription_sync($node_subscriber);
-
-$node_publisher->safe_psql(
-	'postgres', qq(
-	INSERT INTO test_mix_1 VALUES (4, 5, 6);
-));
-
-$node_publisher->wait_for_catchup('sub1');
-
-is( $node_subscriber->safe_psql(
-		'postgres', "SELECT * FROM test_mix_1 ORDER BY a"),
-	qq(1|2|3
-4|5|6),
-	'a mix of publications should use a union of column list');
-
-
-# TEST: With a table included in multiple publications, we should use a
-# union of the column lists. If any of the publications is FOR ALL
-# TABLES, we should replicate all columns.
+# TEST: With a table included in the publications which is FOR ALL TABLES, it
+# means replicate all columns.
 
 # drop unnecessary tables, so as not to interfere with the FOR ALL TABLES
 $node_publisher->safe_psql(
 	'postgres', qq(
-	DROP TABLE tab1, tab2, tab3, tab4, tab5, tab6, tab7, test_mix_1,
+	DROP TABLE tab1, tab2, tab3, tab4, tab5, tab6, tab7,
 			   test_part, test_part_a, test_part_b, test_part_c, test_part_d;
 ));
 
 $node_publisher->safe_psql(
 	'postgres', qq(
 	CREATE TABLE test_mix_2 (a int PRIMARY KEY, b int, c int);
-	CREATE PUBLICATION pub_mix_3 FOR TABLE test_mix_2 (a, b);
+	CREATE PUBLICATION pub_mix_3 FOR TABLE test_mix_2 (a, b, c);
 	CREATE PUBLICATION pub_mix_4 FOR ALL TABLES;
 
 	-- initial data
@@ -964,7 +884,7 @@ $node_subscriber->safe_psql(
 	ALTER SUBSCRIPTION sub1 REFRESH PUBLICATION;
 ));
 
-wait_for_subscription_sync($node_subscriber);
+$node_subscriber->wait_for_subscription_sync;
 
 $node_publisher->safe_psql(
 	'postgres', qq(
@@ -976,12 +896,11 @@ $node_publisher->wait_for_catchup('sub1');
 is( $node_subscriber->safe_psql('postgres', "SELECT * FROM test_mix_2"),
 	qq(1|2|3
 4|5|6),
-	'a mix of publications should use a union of column list');
+	'all columns should be replicated');
 
 
-# TEST: With a table included in multiple publications, we should use a
-# union of the column lists. If any of the publications is FOR ALL
-# TABLES IN SCHEMA, we should replicate all columns.
+# TEST: With a table included in the publication which is FOR ALL TABLES
+# IN SCHEMA, it means replicate all columns.
 
 $node_subscriber->safe_psql(
 	'postgres', qq(
@@ -993,7 +912,7 @@ $node_publisher->safe_psql(
 	'postgres', qq(
 	DROP TABLE test_mix_2;
 	CREATE TABLE test_mix_3 (a int PRIMARY KEY, b int, c int);
-	CREATE PUBLICATION pub_mix_5 FOR TABLE test_mix_3 (a, b);
+	CREATE PUBLICATION pub_mix_5 FOR TABLE test_mix_3 (a, b, c);
 	CREATE PUBLICATION pub_mix_6 FOR ALL TABLES IN SCHEMA public;
 
 	-- initial data
@@ -1005,7 +924,7 @@ $node_subscriber->safe_psql(
 	CREATE SUBSCRIPTION sub1 CONNECTION '$publisher_connstr' PUBLICATION pub_mix_5, pub_mix_6;
 ));
 
-wait_for_subscription_sync($node_subscriber);
+$node_subscriber->wait_for_subscription_sync;
 
 $node_publisher->safe_psql(
 	'postgres', qq(
@@ -1017,7 +936,7 @@ $node_publisher->wait_for_catchup('sub1');
 is( $node_subscriber->safe_psql('postgres', "SELECT * FROM test_mix_3"),
 	qq(1|2|3
 4|5|6),
-	'a mix of publications should use a union of column list');
+	'all columns should be replicated');
 
 
 # TEST: Check handling of publish_via_partition_root - if a partition is
@@ -1052,7 +971,7 @@ $node_subscriber->safe_psql(
 	CREATE SUBSCRIPTION sub1 CONNECTION '$publisher_connstr' PUBLICATION pub_root_true;
 ));
 
-wait_for_subscription_sync($node_subscriber);
+$node_subscriber->wait_for_subscription_sync;
 
 $node_publisher->safe_psql(
 	'postgres', qq(
@@ -1074,7 +993,7 @@ is( $node_subscriber->safe_psql(
 # TEST: Multiple publications which publish schema of parent table and
 # partition. The partition is published through two publications, once
 # through a schema (so no column list) containing the parent, and then
-# also directly (with a columns list). The expected outcome is there is
+# also directly (with all columns). The expected outcome is there is
 # no column list.
 
 $node_publisher->safe_psql(
@@ -1086,7 +1005,7 @@ $node_publisher->safe_psql(
 	CREATE TABLE t_1 PARTITION OF s1.t FOR VALUES FROM (1) TO (10);
 
 	CREATE PUBLICATION pub1 FOR ALL TABLES IN SCHEMA s1;
-	CREATE PUBLICATION pub2 FOR TABLE t_1(b);
+	CREATE PUBLICATION pub2 FOR TABLE t_1(a, b, c);
 
 	-- initial data
 	INSERT INTO s1.t VALUES (1, 2, 3);
@@ -1101,7 +1020,7 @@ $node_subscriber->safe_psql(
 	ALTER SUBSCRIPTION sub1 SET PUBLICATION pub1, pub2;
 ));
 
-wait_for_subscription_sync($node_subscriber);
+$node_subscriber->wait_for_subscription_sync;
 
 $node_publisher->safe_psql(
 	'postgres', qq(
@@ -1125,7 +1044,7 @@ $node_subscriber->safe_psql(
 	ALTER SUBSCRIPTION sub1 SET PUBLICATION pub2, pub1;
 ));
 
-wait_for_subscription_sync($node_subscriber);
+$node_subscriber->wait_for_subscription_sync;
 
 $node_publisher->safe_psql(
 	'postgres', qq(
@@ -1169,7 +1088,7 @@ $node_subscriber->safe_psql(
 	ALTER SUBSCRIPTION sub1 SET PUBLICATION pub3;
 ));
 
-wait_for_subscription_sync($node_subscriber);
+$node_subscriber->wait_for_subscription_sync;
 
 $node_publisher->safe_psql(
 	'postgres', qq(
@@ -1217,7 +1136,7 @@ $node_subscriber->safe_psql(
 	ALTER SUBSCRIPTION sub1 SET PUBLICATION pub4;
 ));
 
-wait_for_subscription_sync($node_subscriber);
+$node_subscriber->wait_for_subscription_sync;
 
 $node_publisher->safe_psql(
 	'postgres', qq(
@@ -1232,6 +1151,56 @@ is( $node_subscriber->safe_psql(
 4||),
 	'publication containing both parent and child relation');
 
+
+# TEST: With a table included in multiple publications with different column
+# lists, we should catch the error when creating the subscription.
+
+$node_publisher->safe_psql(
+	'postgres', qq(
+	CREATE TABLE test_mix_1 (a int PRIMARY KEY, b int, c int);
+	CREATE PUBLICATION pub_mix_1 FOR TABLE test_mix_1 (a, b);
+	CREATE PUBLICATION pub_mix_2 FOR TABLE test_mix_1 (a, c);
+));
+
+$node_subscriber->safe_psql(
+	'postgres', qq(
+	DROP SUBSCRIPTION sub1;
+	CREATE TABLE test_mix_1 (a int PRIMARY KEY, b int, c int);
+));
+
+my ($cmdret, $stdout, $stderr) = $node_subscriber->psql(
+	'postgres', qq(
+	CREATE SUBSCRIPTION sub1 CONNECTION '$publisher_connstr' PUBLICATION pub_mix_1, pub_mix_2;
+));
+
+ok( $stderr =~
+	  qr/cannot use different column lists for table "public.test_mix_1" in different publications/,
+	'different column lists detected');
+
+# TEST: If the column list is changed after creating the subscription, we
+# should catch the error reported by walsender.
+
+$node_publisher->safe_psql(
+	'postgres', qq(
+	ALTER PUBLICATION pub_mix_1 SET TABLE test_mix_1 (a, c);
+));
+
+$node_subscriber->safe_psql(
+	'postgres', qq(
+	CREATE SUBSCRIPTION sub1 CONNECTION '$publisher_connstr' PUBLICATION pub_mix_1, pub_mix_2;
+));
+
+$node_publisher->wait_for_catchup('sub1');
+
+$node_publisher->safe_psql(
+	'postgres', qq(
+	ALTER PUBLICATION pub_mix_1 SET TABLE test_mix_1 (a, b);
+	INSERT INTO test_mix_1 VALUES(1, 1, 1);
+));
+
+$offset = $node_publisher->wait_for_log(
+	qr/cannot use different column lists for table "public.test_mix_1" in different publications/,
+	$offset);
 
 $node_subscriber->stop('fast');
 $node_publisher->stop('fast');

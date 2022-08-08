@@ -317,6 +317,7 @@ tuples_only              off
 unicode_border_linestyle single
 unicode_column_linestyle single
 unicode_header_linestyle single
+xheader_width            full
 -- test multi-line headers, wrapping, and newline indicators
 -- in aligned, unaligned, and wrapped formats
 prepare q as select array_to_string(array_agg(repeat('x',2*n)),E'\n') as "ab
@@ -5316,13 +5317,13 @@ AS $$
 $$;
 -- show both
 SELECT 1 AS one \; SELECT warn('1.5') \; SELECT 2 AS two ;
+NOTICE:  warn 1.5
+CONTEXT:  PL/pgSQL function warn(text) line 2 at RAISE
  one 
 -----
    1
 (1 row)
 
-NOTICE:  warn 1.5
-CONTEXT:  PL/pgSQL function warn(text) line 2 at RAISE
  warn 
 ------
  t
@@ -5335,13 +5336,13 @@ CONTEXT:  PL/pgSQL function warn(text) line 2 at RAISE
 
 -- \gset applies to last query only
 SELECT 3 AS three \; SELECT warn('3.5') \; SELECT 4 AS four \gset
+NOTICE:  warn 3.5
+CONTEXT:  PL/pgSQL function warn(text) line 2 at RAISE
  three 
 -------
      3
 (1 row)
 
-NOTICE:  warn 3.5
-CONTEXT:  PL/pgSQL function warn(text) line 2 at RAISE
  warn 
 ------
  t

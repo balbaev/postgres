@@ -1203,8 +1203,6 @@ ExecInitExprRec(Expr *node, ExprState *state,
 				FmgrInfo   *finfo;
 				FunctionCallInfo fcinfo;
 				AclResult	aclresult;
-				FmgrInfo   *hash_finfo;
-				FunctionCallInfo hash_fcinfo;
 				Oid			cmpfuncid;
 
 				/*
@@ -1262,18 +1260,6 @@ ExecInitExprRec(Expr *node, ExprState *state,
 				 */
 				if (OidIsValid(opexpr->hashfuncid))
 				{
-					hash_finfo = palloc0(sizeof(FmgrInfo));
-					hash_fcinfo = palloc0(SizeForFunctionCallInfo(1));
-					fmgr_info(opexpr->hashfuncid, hash_finfo);
-					fmgr_info_set_expr((Node *) node, hash_finfo);
-					InitFunctionCallInfoData(*hash_fcinfo, hash_finfo,
-											 1, opexpr->inputcollid, NULL,
-											 NULL);
-
-					scratch.d.hashedscalararrayop.hash_finfo = hash_finfo;
-					scratch.d.hashedscalararrayop.hash_fcinfo_data = hash_fcinfo;
-					scratch.d.hashedscalararrayop.hash_fn_addr = hash_finfo->fn_addr;
-
 					/* Evaluate scalar directly into left function argument */
 					ExecInitExprRec(scalararg, state,
 									&fcinfo->args[0].value, &fcinfo->args[0].isnull);
@@ -1292,11 +1278,8 @@ ExecInitExprRec(Expr *node, ExprState *state,
 					scratch.d.hashedscalararrayop.inclause = opexpr->useOr;
 					scratch.d.hashedscalararrayop.finfo = finfo;
 					scratch.d.hashedscalararrayop.fcinfo_data = fcinfo;
-					scratch.d.hashedscalararrayop.fn_addr = finfo->fn_addr;
+					scratch.d.hashedscalararrayop.saop = opexpr;
 
-					scratch.d.hashedscalararrayop.hash_finfo = hash_finfo;
-					scratch.d.hashedscalararrayop.hash_fcinfo_data = hash_fcinfo;
-					scratch.d.hashedscalararrayop.hash_fn_addr = hash_finfo->fn_addr;
 
 					ExprEvalPushStep(state, &scratch);
 				}
@@ -2470,32 +2453,38 @@ ExecInitExprRec(Expr *node, ExprState *state,
 				}
 				else
 				{
+					JsonConstructorExprState *jcstate;
+
+					jcstate = palloc0(sizeof(JsonConstructorExprState));
+
 					scratch.opcode = EEOP_JSON_CONSTRUCTOR;
-					scratch.d.json_constructor.constructor = ctor;
-					scratch.d.json_constructor.arg_values = palloc(sizeof(Datum) * nargs);
-					scratch.d.json_constructor.arg_nulls = palloc(sizeof(bool) * nargs);
-					scratch.d.json_constructor.arg_types = palloc(sizeof(Oid) * nargs);
-					scratch.d.json_constructor.nargs = nargs;
+					scratch.d.json_constructor.jcstate = jcstate;
+
+					jcstate->constructor = ctor;
+					jcstate->arg_values = palloc(sizeof(Datum) * nargs);
+					jcstate->arg_nulls = palloc(sizeof(bool) * nargs);
+					jcstate->arg_types = palloc(sizeof(Oid) * nargs);
+					jcstate->nargs = nargs;
 
 					foreach(lc, args)
 					{
 						Expr	   *arg = (Expr *) lfirst(lc);
 
-						scratch.d.json_constructor.arg_types[argno] = exprType((Node *) arg);
+						jcstate->arg_types[argno] = exprType((Node *) arg);
 
 						if (IsA(arg, Const))
 						{
 							/* Don't evaluate const arguments every round */
 							Const	   *con = (Const *) arg;
 
-							scratch.d.json_constructor.arg_values[argno] = con->constvalue;
-							scratch.d.json_constructor.arg_nulls[argno] = con->constisnull;
+							jcstate->arg_values[argno] = con->constvalue;
+							jcstate->arg_nulls[argno] = con->constisnull;
 						}
 						else
 						{
 							ExecInitExprRec(arg, state,
-											&scratch.d.json_constructor.arg_values[argno],
-											&scratch.d.json_constructor.arg_nulls[argno]);
+											&jcstate->arg_values[argno],
+											&jcstate->arg_nulls[argno]);
 						}
 						argno++;
 					}
@@ -2506,14 +2495,14 @@ ExecInitExprRec(Expr *node, ExprState *state,
 						bool		is_jsonb =
 						ctor->returning->format->format_type == JS_FORMAT_JSONB;
 
-						scratch.d.json_constructor.arg_type_cache =
-							palloc(sizeof(*scratch.d.json_constructor.arg_type_cache) * nargs);
+						jcstate->arg_type_cache =
+							palloc(sizeof(*jcstate->arg_type_cache) * nargs);
 
 						for (int i = 0; i < nargs; i++)
 						{
 							int			category;
 							Oid			outfuncid;
-							Oid			typid = scratch.d.json_constructor.arg_types[i];
+							Oid			typid = jcstate->arg_types[i];
 
 							if (is_jsonb)
 							{
@@ -2532,8 +2521,8 @@ ExecInitExprRec(Expr *node, ExprState *state,
 								category = (int) jscat;
 							}
 
-							scratch.d.json_constructor.arg_type_cache[i].outfuncid = outfuncid;
-							scratch.d.json_constructor.arg_type_cache[i].category = category;
+							jcstate->arg_type_cache[i].outfuncid = outfuncid;
+							jcstate->arg_type_cache[i].category = category;
 						}
 					}
 
@@ -2572,41 +2561,44 @@ ExecInitExprRec(Expr *node, ExprState *state,
 		case T_JsonExpr:
 			{
 				JsonExpr   *jexpr = castNode(JsonExpr, node);
+				JsonExprState *jsestate = palloc0(sizeof(JsonExprState));
 				ListCell   *argexprlc;
 				ListCell   *argnamelc;
 
 				scratch.opcode = EEOP_JSONEXPR;
-				scratch.d.jsonexpr.jsexpr = jexpr;
+				scratch.d.jsonexpr.jsestate = jsestate;
 
-				scratch.d.jsonexpr.formatted_expr =
-					palloc(sizeof(*scratch.d.jsonexpr.formatted_expr));
+				jsestate->jsexpr = jexpr;
+
+				jsestate->formatted_expr =
+					palloc(sizeof(*jsestate->formatted_expr));
 
 				ExecInitExprRec((Expr *) jexpr->formatted_expr, state,
-								&scratch.d.jsonexpr.formatted_expr->value,
-								&scratch.d.jsonexpr.formatted_expr->isnull);
+								&jsestate->formatted_expr->value,
+								&jsestate->formatted_expr->isnull);
 
-				scratch.d.jsonexpr.pathspec =
-					palloc(sizeof(*scratch.d.jsonexpr.pathspec));
+				jsestate->pathspec =
+					palloc(sizeof(*jsestate->pathspec));
 
 				ExecInitExprRec((Expr *) jexpr->path_spec, state,
-								&scratch.d.jsonexpr.pathspec->value,
-								&scratch.d.jsonexpr.pathspec->isnull);
+								&jsestate->pathspec->value,
+								&jsestate->pathspec->isnull);
 
-				scratch.d.jsonexpr.res_expr =
-					palloc(sizeof(*scratch.d.jsonexpr.res_expr));
+				jsestate->res_expr =
+					palloc(sizeof(*jsestate->res_expr));
 
-				scratch.d.jsonexpr.result_expr = jexpr->result_coercion
+				jsestate->result_expr = jexpr->result_coercion
 					? ExecInitExprWithCaseValue((Expr *) jexpr->result_coercion->expr,
 												state->parent,
-												&scratch.d.jsonexpr.res_expr->value,
-												&scratch.d.jsonexpr.res_expr->isnull)
+												&jsestate->res_expr->value,
+												&jsestate->res_expr->isnull)
 					: NULL;
 
-				scratch.d.jsonexpr.default_on_empty = !jexpr->on_empty ? NULL :
+				jsestate->default_on_empty = !jexpr->on_empty ? NULL :
 					ExecInitExpr((Expr *) jexpr->on_empty->default_expr,
 								 state->parent);
 
-				scratch.d.jsonexpr.default_on_error =
+				jsestate->default_on_error =
 					ExecInitExpr((Expr *) jexpr->on_error->default_expr,
 								 state->parent);
 
@@ -2617,11 +2609,11 @@ ExecInitExprRec(Expr *node, ExprState *state,
 
 					/* lookup the result type's input function */
 					getTypeInputInfo(jexpr->returning->typid, &typinput,
-									 &scratch.d.jsonexpr.input.typioparam);
-					fmgr_info(typinput, &scratch.d.jsonexpr.input.func);
+									 &jsestate->input.typioparam);
+					fmgr_info(typinput, &jsestate->input.func);
 				}
 
-				scratch.d.jsonexpr.args = NIL;
+				jsestate->args = NIL;
 
 				forboth(argexprlc, jexpr->passing_values,
 						argnamelc, jexpr->passing_names)
@@ -2640,11 +2632,11 @@ ExecInitExprRec(Expr *node, ExprState *state,
 					var->value = (Datum) 0;
 					var->isnull = true;
 
-					scratch.d.jsonexpr.args =
-						lappend(scratch.d.jsonexpr.args, var);
+					jsestate->args =
+						lappend(jsestate->args, var);
 				}
 
-				scratch.d.jsonexpr.cache = NULL;
+				jsestate->cache = NULL;
 
 				if (jexpr->coercions)
 				{
@@ -2653,13 +2645,13 @@ ExecInitExprRec(Expr *node, ExprState *state,
 					Datum	   *caseval;
 					bool	   *casenull;
 
-					scratch.d.jsonexpr.coercion_expr =
-						palloc(sizeof(*scratch.d.jsonexpr.coercion_expr));
+					jsestate->coercion_expr =
+						palloc(sizeof(*jsestate->coercion_expr));
 
-					caseval = &scratch.d.jsonexpr.coercion_expr->value;
-					casenull = &scratch.d.jsonexpr.coercion_expr->isnull;
+					caseval = &jsestate->coercion_expr->value;
+					casenull = &jsestate->coercion_expr->isnull;
 
-					for (cstate = &scratch.d.jsonexpr.coercions.null,
+					for (cstate = &jsestate->coercions.null,
 						 coercion = &jexpr->coercions->null;
 						 coercion <= &jexpr->coercions->composite;
 						 coercion++, cstate++)
@@ -3674,19 +3666,30 @@ ExecBuildAggTrans(AggState *aggstate, AggStatePerPhase phase,
 				scratch.resnull = &state->resnull;
 			}
 			argno++;
+
+			Assert(pertrans->numInputs == argno);
 		}
-		else if (pertrans->numSortCols == 0)
+		else if (!pertrans->aggsortrequired)
 		{
 			ListCell   *arg;
 
 			/*
-			 * Normal transition function without ORDER BY / DISTINCT.
+			 * Normal transition function without ORDER BY / DISTINCT or with
+			 * ORDER BY / DISTINCT but the planner has given us pre-sorted
+			 * input.
 			 */
 			strictargs = trans_fcinfo->args + 1;
 
 			foreach(arg, pertrans->aggref->args)
 			{
 				TargetEntry *source_tle = (TargetEntry *) lfirst(arg);
+
+				/*
+				 * Don't initialize args for any ORDER BY clause that might
+				 * exist in a presorted aggregate.
+				 */
+				if (argno == pertrans->numTransInputs)
+					break;
 
 				/*
 				 * Start from 1, since the 0th arg will be the transition
@@ -3697,11 +3700,13 @@ ExecBuildAggTrans(AggState *aggstate, AggStatePerPhase phase,
 								&trans_fcinfo->args[argno + 1].isnull);
 				argno++;
 			}
+			Assert(pertrans->numTransInputs == argno);
 		}
 		else if (pertrans->numInputs == 1)
 		{
 			/*
-			 * DISTINCT and/or ORDER BY case, with a single column sorted on.
+			 * Non-presorted DISTINCT and/or ORDER BY case, with a single
+			 * column sorted on.
 			 */
 			TargetEntry *source_tle =
 			(TargetEntry *) linitial(pertrans->aggref->args);
@@ -3713,11 +3718,14 @@ ExecBuildAggTrans(AggState *aggstate, AggStatePerPhase phase,
 							&state->resnull);
 			strictnulls = &state->resnull;
 			argno++;
+
+			Assert(pertrans->numInputs == argno);
 		}
 		else
 		{
 			/*
-			 * DISTINCT and/or ORDER BY case, with multiple columns sorted on.
+			 * Non-presorted DISTINCT and/or ORDER BY case, with multiple
+			 * columns sorted on.
 			 */
 			Datum	   *values = pertrans->sortslot->tts_values;
 			bool	   *nulls = pertrans->sortslot->tts_isnull;
@@ -3733,8 +3741,8 @@ ExecBuildAggTrans(AggState *aggstate, AggStatePerPhase phase,
 								&values[argno], &nulls[argno]);
 				argno++;
 			}
+			Assert(pertrans->numInputs == argno);
 		}
-		Assert(pertrans->numInputs == argno);
 
 		/*
 		 * For a strict transfn, nothing happens when there's a NULL input; we
@@ -3751,6 +3759,21 @@ ExecBuildAggTrans(AggState *aggstate, AggStatePerPhase phase,
 			scratch.d.agg_strict_input_check.args = strictargs;
 			scratch.d.agg_strict_input_check.jumpnull = -1; /* adjust later */
 			scratch.d.agg_strict_input_check.nargs = pertrans->numTransInputs;
+			ExprEvalPushStep(state, &scratch);
+			adjust_bailout = lappend_int(adjust_bailout,
+										 state->steps_len - 1);
+		}
+
+		/* Handle DISTINCT aggregates which have pre-sorted input */
+		if (pertrans->numDistinctCols > 0 && !pertrans->aggsortrequired)
+		{
+			if (pertrans->numDistinctCols > 1)
+				scratch.opcode = EEOP_AGG_PRESORTED_DISTINCT_MULTI;
+			else
+				scratch.opcode = EEOP_AGG_PRESORTED_DISTINCT_SINGLE;
+
+			scratch.d.agg_presorted_distinctcheck.pertrans = pertrans;
+			scratch.d.agg_presorted_distinctcheck.jumpdistinct = -1;	/* adjust later */
 			ExprEvalPushStep(state, &scratch);
 			adjust_bailout = lappend_int(adjust_bailout,
 										 state->steps_len - 1);
@@ -3816,6 +3839,12 @@ ExecBuildAggTrans(AggState *aggstate, AggStatePerPhase phase,
 				Assert(as->d.agg_deserialize.jumpnull == -1);
 				as->d.agg_deserialize.jumpnull = state->steps_len;
 			}
+			else if (as->opcode == EEOP_AGG_PRESORTED_DISTINCT_SINGLE ||
+					 as->opcode == EEOP_AGG_PRESORTED_DISTINCT_MULTI)
+			{
+				Assert(as->d.agg_presorted_distinctcheck.jumpdistinct == -1);
+				as->d.agg_presorted_distinctcheck.jumpdistinct = state->steps_len;
+			}
 			else
 				Assert(false);
 		}
@@ -3865,7 +3894,8 @@ ExecBuildAggTransCall(ExprState *state, AggState *aggstate,
 	/*
 	 * Determine appropriate transition implementation.
 	 *
-	 * For non-ordered aggregates:
+	 * For non-ordered aggregates and ORDER BY / DISTINCT aggregates with
+	 * presorted input:
 	 *
 	 * If the initial value for the transition state doesn't exist in the
 	 * pg_aggregate table then we will let the first non-NULL value returned
@@ -3895,7 +3925,7 @@ ExecBuildAggTransCall(ExprState *state, AggState *aggstate,
 	 * process_ordered_aggregate_{single, multi} and
 	 * advance_transition_function.
 	 */
-	if (pertrans->numSortCols == 0)
+	if (!pertrans->aggsortrequired)
 	{
 		if (pertrans->transtypeByVal)
 		{

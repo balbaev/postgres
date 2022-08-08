@@ -16,6 +16,7 @@
 #include "catalog/partition.h"
 #include "catalog/pg_publication.h"
 #include "catalog/pg_publication_rel.h"
+#include "catalog/pg_subscription.h"
 #include "commands/defrem.h"
 #include "executor/executor.h"
 #include "fmgr.h"
@@ -34,8 +35,6 @@
 #include "utils/varlena.h"
 
 PG_MODULE_MAGIC;
-
-extern void _PG_output_plugin_init(OutputPluginCallbacks *cb);
 
 static void pgoutput_startup(LogicalDecodingContext *ctx,
 							 OutputPluginOptions *opt, bool is_init);
@@ -81,6 +80,7 @@ static void pgoutput_stream_prepare_txn(LogicalDecodingContext *ctx,
 
 static bool publications_valid;
 static bool in_streaming;
+static bool publish_no_origin;
 
 static List *LoadPublications(List *pubnames);
 static void publication_invalidation_cb(Datum arg, int cacheid,
@@ -287,6 +287,7 @@ parse_output_parameters(List *options, PGOutputData *data)
 	bool		messages_option_given = false;
 	bool		streaming_given = false;
 	bool		two_phase_option_given = false;
+	bool		origin_option_given = false;
 
 	data->binary = false;
 	data->streaming = false;
@@ -379,6 +380,24 @@ parse_output_parameters(List *options, PGOutputData *data)
 			two_phase_option_given = true;
 
 			data->two_phase = defGetBoolean(defel);
+		}
+		else if (strcmp(defel->defname, "origin") == 0)
+		{
+			if (origin_option_given)
+				ereport(ERROR,
+						errcode(ERRCODE_SYNTAX_ERROR),
+						errmsg("conflicting or redundant options"));
+			origin_option_given = true;
+
+			data->origin = defGetString(defel);
+			if (pg_strcasecmp(data->origin, LOGICALREP_ORIGIN_NONE) == 0)
+				publish_no_origin = true;
+			else if (pg_strcasecmp(data->origin, LOGICALREP_ORIGIN_ANY) == 0)
+				publish_no_origin = false;
+			else
+				ereport(ERROR,
+						errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("unrecognized origin value: \"%s\"", data->origin));
 		}
 		else
 			elog(ERROR, "unrecognized pgoutput option: %s", defel->defname);
@@ -979,30 +998,31 @@ pgoutput_column_list_init(PGOutputData *data, List *publications,
 						  RelationSyncEntry *entry)
 {
 	ListCell   *lc;
+	bool		first = true;
+	Relation	relation = RelationIdGetRelation(entry->publish_as_relid);
 
 	/*
 	 * Find if there are any column lists for this relation. If there are,
-	 * build a bitmap merging all the column lists.
-	 *
-	 * All the given publication-table mappings must be checked.
+	 * build a bitmap using the column lists.
 	 *
 	 * Multiple publications might have multiple column lists for this
 	 * relation.
 	 *
+	 * Note that we don't support the case where the column list is different
+	 * for the same table when combining publications. See comments atop
+	 * fetch_table_list. But one can later change the publication so we still
+	 * need to check all the given publication-table mappings and report an
+	 * error if any publications have a different column list.
+	 *
 	 * FOR ALL TABLES and FOR ALL TABLES IN SCHEMA implies "don't use column
-	 * list" so it takes precedence.
+	 * list".
 	 */
 	foreach(lc, publications)
 	{
 		Publication *pub = lfirst(lc);
 		HeapTuple	cftuple = NULL;
 		Datum		cfdatum = 0;
-
-		/*
-		 * Assume there's no column list. Only if we find pg_publication_rel
-		 * entry with a column list we'll switch it to false.
-		 */
-		bool		pub_no_list = true;
+		Bitmapset  *cols = NULL;
 
 		/*
 		 * If the publication is FOR ALL TABLES then it is treated the same as
@@ -1011,6 +1031,8 @@ pgoutput_column_list_init(PGOutputData *data, List *publications,
 		 */
 		if (!pub->alltables)
 		{
+			bool		pub_no_list = true;
+
 			/*
 			 * Check for the presence of a column list in this publication.
 			 *
@@ -1024,51 +1046,48 @@ pgoutput_column_list_init(PGOutputData *data, List *publications,
 
 			if (HeapTupleIsValid(cftuple))
 			{
-				/*
-				 * Lookup the column list attribute.
-				 *
-				 * Note: We update the pub_no_list value directly, because if
-				 * the value is NULL, we have no list (and vice versa).
-				 */
+				/* Lookup the column list attribute. */
 				cfdatum = SysCacheGetAttr(PUBLICATIONRELMAP, cftuple,
 										  Anum_pg_publication_rel_prattrs,
 										  &pub_no_list);
 
-				/*
-				 * Build the column list bitmap in the per-entry context.
-				 *
-				 * We need to merge column lists from all publications, so we
-				 * update the same bitmapset. If the column list is null, we
-				 * interpret it as replicating all columns.
-				 */
+				/* Build the column list bitmap in the per-entry context. */
 				if (!pub_no_list)	/* when not null */
 				{
 					pgoutput_ensure_entry_cxt(data, entry);
 
-					entry->columns = pub_collist_to_bitmapset(entry->columns,
-															  cfdatum,
-															  entry->entry_cxt);
+					cols = pub_collist_to_bitmapset(cols, cfdatum,
+													entry->entry_cxt);
+
+					/*
+					 * If column list includes all the columns of the table,
+					 * set it to NULL.
+					 */
+					if (bms_num_members(cols) == RelationGetNumberOfAttributes(relation))
+					{
+						bms_free(cols);
+						cols = NULL;
+					}
 				}
+
+				ReleaseSysCache(cftuple);
 			}
 		}
 
-		/*
-		 * Found a publication with no column list, so we're done. But first
-		 * discard column list we might have from preceding publications.
-		 */
-		if (pub_no_list)
+		if (first)
 		{
-			if (cftuple)
-				ReleaseSysCache(cftuple);
-
-			bms_free(entry->columns);
-			entry->columns = NULL;
-
-			break;
+			entry->columns = cols;
+			first = false;
 		}
-
-		ReleaseSysCache(cftuple);
+		else if (!bms_equal(entry->columns, cols))
+			ereport(ERROR,
+					errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					errmsg("cannot use different column lists for table \"%s.%s\" in different publications",
+						   get_namespace_name(RelationGetNamespace(relation)),
+						   RelationGetRelationName(relation)));
 	}							/* loop all subscribed publications */
+
+	RelationClose(relation);
 }
 
 /*
@@ -1698,12 +1717,16 @@ pgoutput_message(LogicalDecodingContext *ctx, ReorderBufferTXN *txn,
 }
 
 /*
- * Currently we always forward.
+ * Return true if the data is associated with an origin and the user has
+ * requested the changes that don't have an origin, false otherwise.
  */
 static bool
 pgoutput_origin_filter(LogicalDecodingContext *ctx,
 					   RepOriginId origin_id)
 {
+	if (publish_no_origin && origin_id != InvalidRepOriginId)
+		return true;
+
 	return false;
 }
 
@@ -1923,15 +1946,7 @@ init_rel_sync_cache(MemoryContext cachectx)
 static bool
 get_schema_sent_in_streamed_txn(RelationSyncEntry *entry, TransactionId xid)
 {
-	ListCell   *lc;
-
-	foreach(lc, entry->streamed_txns)
-	{
-		if (xid == (uint32) lfirst_int(lc))
-			return true;
-	}
-
-	return false;
+	return list_member_xid(entry->streamed_txns, xid);
 }
 
 /*
@@ -1945,7 +1960,7 @@ set_schema_sent_in_streamed_txn(RelationSyncEntry *entry, TransactionId xid)
 
 	oldctx = MemoryContextSwitchTo(CacheMemoryContext);
 
-	entry->streamed_txns = lappend_int(entry->streamed_txns, xid);
+	entry->streamed_txns = lappend_xid(entry->streamed_txns, xid);
 
 	MemoryContextSwitchTo(oldctx);
 }
@@ -2248,7 +2263,7 @@ cleanup_rel_sync_cache(TransactionId xid, bool is_commit)
 		 */
 		foreach(lc, entry->streamed_txns)
 		{
-			if (xid == (uint32) lfirst_int(lc))
+			if (xid == lfirst_xid(lc))
 			{
 				if (is_commit)
 					entry->schema_sent = true;

@@ -584,8 +584,11 @@ EOF
         <application>psql</application> to issue a <command>BEGIN</command> command
         before the first such option and a <command>COMMIT</command> command after
         the last one, thereby wrapping all the commands into a single
-        transaction.  This ensures that either all the commands complete
-        successfully, or no changes are applied.
+        transaction. If any of the commands fails and the variable
+        <varname>ON_ERROR_STOP</varname> was set, a
+        <command>ROLLBACK</command> command is sent instead. This ensures that
+        either all the commands complete successfully, or no changes are
+        applied.
        </para>
 
        <para>
@@ -2840,6 +2843,39 @@ lo_import 152801
           </varlistentry>
 
           <varlistentry>
+          <term><literal>xheader_width</literal></term>
+          <listitem>
+          <para>
+           Sets the maximum width of the header for expanded output to one of
+           <literal>full</literal> (the default value),
+           <literal>column</literal>, <literal>page</literal>, or an
+           <replaceable class="parameter">integer value</replaceable>.
+          </para>
+
+          <para>
+           <literal>full</literal>: the expanded header is not truncated,
+           and will be as wide as the widest output
+           line.
+          </para>
+
+          <para>
+           <literal>column</literal>: truncate the header line at the
+           width of the first column.
+          </para>
+
+          <para>
+           <literal>page</literal>: truncate the header line at the terminal
+           width.
+          </para>
+
+          <para>
+           <replaceable class="parameter">integer value</replaceable>: specify
+           the exact maximum width of the header line.
+          </para>
+          </listitem>
+          </varlistentry>
+
+          <varlistentry>
           <term><literal>fieldsep</literal></term>
           <listitem>
           <para>
@@ -4914,7 +4950,7 @@ PSQL_EDITOR_LINENUMBER_ARG='--line '
        or an older major version.  Backslash commands are particularly likely
        to fail if the server is of a newer version than <application>psql</application>
        itself.  However, backslash commands of the <literal>\d</literal> family should
-       work with servers of versions back to 7.4, though not necessarily with
+       work with servers of versions back to 9.2, though not necessarily with
        servers newer than <application>psql</application> itself.  The general
        functionality of running SQL commands and displaying query results
        should also work with servers of a newer major version, but this cannot

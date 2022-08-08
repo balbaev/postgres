@@ -64,6 +64,7 @@
 #define SUBOPT_TWOPHASE_COMMIT		0x00000200
 #define SUBOPT_DISABLE_ON_ERR		0x00000400
 #define SUBOPT_LSN					0x00000800
+#define SUBOPT_ORIGIN				0x00001000
 
 /* check if the 'val' has 'bits' set */
 #define IsSet(val, bits)  (((val) & (bits)) == (bits))
@@ -86,6 +87,7 @@ typedef struct SubOpts
 	bool		streaming;
 	bool		twophase;
 	bool		disableonerr;
+	char	   *origin;
 	XLogRecPtr	lsn;
 } SubOpts;
 
@@ -118,7 +120,7 @@ parse_subscription_options(ParseState *pstate, List *stmt_options,
 		   IsSet(supported_opts, SUBOPT_ENABLED | SUBOPT_CREATE_SLOT |
 				 SUBOPT_COPY_DATA));
 
-	/* Set default values for the boolean supported options. */
+	/* Set default values for the supported options. */
 	if (IsSet(supported_opts, SUBOPT_CONNECT))
 		opts->connect = true;
 	if (IsSet(supported_opts, SUBOPT_ENABLED))
@@ -137,6 +139,8 @@ parse_subscription_options(ParseState *pstate, List *stmt_options,
 		opts->twophase = false;
 	if (IsSet(supported_opts, SUBOPT_DISABLE_ON_ERR))
 		opts->disableonerr = false;
+	if (IsSet(supported_opts, SUBOPT_ORIGIN))
+		opts->origin = pstrdup(LOGICALREP_ORIGIN_ANY);
 
 	/* Parse options */
 	foreach(lc, stmt_options)
@@ -264,6 +268,29 @@ parse_subscription_options(ParseState *pstate, List *stmt_options,
 
 			opts->specified_opts |= SUBOPT_DISABLE_ON_ERR;
 			opts->disableonerr = defGetBoolean(defel);
+		}
+		else if (IsSet(supported_opts, SUBOPT_ORIGIN) &&
+				 strcmp(defel->defname, "origin") == 0)
+		{
+			if (IsSet(opts->specified_opts, SUBOPT_ORIGIN))
+				errorConflictingDefElem(defel, pstate);
+
+			opts->specified_opts |= SUBOPT_ORIGIN;
+			pfree(opts->origin);
+
+			/*
+			 * Even though the "origin" parameter allows only "none" and "any"
+			 * values, it is implemented as a string type so that the
+			 * parameter can be extended in future versions to support
+			 * filtering using origin names specified by the user.
+			 */
+			opts->origin = defGetString(defel);
+
+			if ((pg_strcasecmp(opts->origin, LOGICALREP_ORIGIN_NONE) != 0) &&
+				(pg_strcasecmp(opts->origin, LOGICALREP_ORIGIN_ANY) != 0))
+				ereport(ERROR,
+						errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+						errmsg("unrecognized origin value: \"%s\"", opts->origin));
 		}
 		else if (IsSet(supported_opts, SUBOPT_LSN) &&
 				 strcmp(defel->defname, "lsn") == 0)
@@ -494,8 +521,7 @@ publicationListToArray(List *publist)
 
 	MemoryContextSwitchTo(oldcxt);
 
-	arr = construct_array(datums, list_length(publist),
-						  TEXTOID, -1, false, TYPALIGN_INT);
+	arr = construct_array_builtin(datums, list_length(publist), TEXTOID);
 
 	MemoryContextDelete(memcxt);
 
@@ -531,7 +557,7 @@ CreateSubscription(ParseState *pstate, CreateSubscriptionStmt *stmt,
 					  SUBOPT_SLOT_NAME | SUBOPT_COPY_DATA |
 					  SUBOPT_SYNCHRONOUS_COMMIT | SUBOPT_BINARY |
 					  SUBOPT_STREAMING | SUBOPT_TWOPHASE_COMMIT |
-					  SUBOPT_DISABLE_ON_ERR);
+					  SUBOPT_DISABLE_ON_ERR | SUBOPT_ORIGIN);
 	parse_subscription_options(pstate, stmt->options, supported_opts, &opts);
 
 	/*
@@ -618,6 +644,8 @@ CreateSubscription(ParseState *pstate, CreateSubscriptionStmt *stmt,
 		CStringGetTextDatum(opts.synchronous_commit);
 	values[Anum_pg_subscription_subpublications - 1] =
 		publicationListToArray(publications);
+	values[Anum_pg_subscription_suborigin - 1] =
+		CStringGetTextDatum(opts.origin);
 
 	tup = heap_form_tuple(RelationGetDescr(rel), values, nulls);
 
@@ -786,7 +814,7 @@ AlterSubscription_refresh(Subscription *sub, bool copy_data,
 		pubrel_names = fetch_table_list(wrconn, sub->publications);
 
 		/* Get local table list. */
-		subrel_states = GetSubscriptionRelations(sub->oid);
+		subrel_states = GetSubscriptionRelations(sub->oid, false);
 
 		/*
 		 * Build qsorted array of local table oids for faster lookup. This can
@@ -1015,7 +1043,8 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 			{
 				supported_opts = (SUBOPT_SLOT_NAME |
 								  SUBOPT_SYNCHRONOUS_COMMIT | SUBOPT_BINARY |
-								  SUBOPT_STREAMING | SUBOPT_DISABLE_ON_ERR);
+								  SUBOPT_STREAMING | SUBOPT_DISABLE_ON_ERR |
+								  SUBOPT_ORIGIN);
 
 				parse_subscription_options(pstate, stmt->options,
 										   supported_opts, &opts);
@@ -1070,6 +1099,13 @@ AlterSubscription(ParseState *pstate, AlterSubscriptionStmt *stmt,
 						= BoolGetDatum(opts.disableonerr);
 					replaces[Anum_pg_subscription_subdisableonerr - 1]
 						= true;
+				}
+
+				if (IsSet(opts.specified_opts, SUBOPT_ORIGIN))
+				{
+					values[Anum_pg_subscription_suborigin - 1] =
+						CStringGetTextDatum(opts.origin);
+					replaces[Anum_pg_subscription_suborigin - 1] = true;
 				}
 
 				update_tuple = true;
@@ -1458,7 +1494,7 @@ DropSubscription(DropSubscriptionStmt *stmt, bool isTopLevel)
 	 * the apply and tablesync workers and they can't restart because of
 	 * exclusive lock on the subscription.
 	 */
-	rstates = GetSubscriptionNotReadyRelations(subid);
+	rstates = GetSubscriptionRelations(subid, true);
 	foreach(lc, rstates)
 	{
 		SubscriptionRelState *rstate = (SubscriptionRelState *) lfirst(lc);
@@ -1579,15 +1615,9 @@ DropSubscription(DropSubscriptionStmt *stmt, bool isTopLevel)
 
 	/*
 	 * Tell the cumulative stats system that the subscription is getting
-	 * dropped. We can safely report dropping the subscription statistics here
-	 * if the subscription is associated with a replication slot since we
-	 * cannot run DROP SUBSCRIPTION inside a transaction block.  Subscription
-	 * statistics will be removed later by (auto)vacuum either if it's not
-	 * associated with a replication slot or if the message for dropping the
-	 * subscription gets lost.
+	 * dropped.
 	 */
-	if (slotname)
-		pgstat_drop_subscription(subid);
+	pgstat_drop_subscription(subid);
 
 	table_close(rel, NoLock);
 }
@@ -1754,6 +1784,11 @@ AlterSubscriptionOwner_oid(Oid subid, Oid newOwnerId)
 /*
  * Get the list of tables which belong to specified publications on the
  * publisher connection.
+ *
+ * Note that we don't support the case where the column list is different for
+ * the same table in different publications to avoid sending unwanted column
+ * information for some of the rows. This can happen when both the column
+ * list and row filter are specified for different publications.
  */
 static List *
 fetch_table_list(WalReceiverConn *wrconn, List *publications)
@@ -1761,17 +1796,23 @@ fetch_table_list(WalReceiverConn *wrconn, List *publications)
 	WalRcvExecResult *res;
 	StringInfoData cmd;
 	TupleTableSlot *slot;
-	Oid			tableRow[2] = {TEXTOID, TEXTOID};
+	Oid			tableRow[3] = {TEXTOID, TEXTOID, NAMEARRAYOID};
 	List	   *tablelist = NIL;
+	bool		check_columnlist = (walrcv_server_version(wrconn) >= 150000);
 
 	initStringInfo(&cmd);
-	appendStringInfoString(&cmd, "SELECT DISTINCT t.schemaname, t.tablename\n"
-						   "  FROM pg_catalog.pg_publication_tables t\n"
+	appendStringInfoString(&cmd, "SELECT DISTINCT t.schemaname, t.tablename \n");
+
+	/* Get column lists for each relation if the publisher supports it */
+	if (check_columnlist)
+		appendStringInfoString(&cmd, ", t.attnames\n");
+
+	appendStringInfoString(&cmd, "FROM pg_catalog.pg_publication_tables t\n"
 						   " WHERE t.pubname IN (");
 	get_publications_str(publications, &cmd, true);
 	appendStringInfoChar(&cmd, ')');
 
-	res = walrcv_exec(wrconn, cmd.data, 2, tableRow);
+	res = walrcv_exec(wrconn, cmd.data, check_columnlist ? 3 : 2, tableRow);
 	pfree(cmd.data);
 
 	if (res->status != WALRCV_OK_TUPLES)
@@ -1795,7 +1836,14 @@ fetch_table_list(WalReceiverConn *wrconn, List *publications)
 		Assert(!isnull);
 
 		rv = makeRangeVar(nspname, relname, -1);
-		tablelist = lappend(tablelist, rv);
+
+		if (check_columnlist && list_member(tablelist, rv))
+			ereport(ERROR,
+					errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+					errmsg("cannot use different column lists for table \"%s.%s\" in different publications",
+						   nspname, relname));
+		else
+			tablelist = lappend(tablelist, rv);
 
 		ExecClearTuple(slot);
 	}

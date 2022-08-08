@@ -442,20 +442,12 @@ pg_fsync_writethrough(int fd)
 
 /*
  * pg_fdatasync --- same as fdatasync except does nothing if enableFsync is off
- *
- * Not all platforms have fdatasync; treat as fsync if not available.
  */
 int
 pg_fdatasync(int fd)
 {
 	if (enableFsync)
-	{
-#ifdef HAVE_FDATASYNC
 		return fdatasync(fd);
-#else
-		return fsync(fd);
-#endif
-	}
 	else
 		return 0;
 }
@@ -808,69 +800,6 @@ durable_unlink(const char *fname, int elevel)
 }
 
 /*
- * durable_rename_excl -- rename a file in a durable manner.
- *
- * Similar to durable_rename(), except that this routine tries (but does not
- * guarantee) not to overwrite the target file.
- *
- * Note that a crash in an unfortunate moment can leave you with two links to
- * the target file.
- *
- * Log errors with the caller specified severity.
- *
- * On Windows, using a hard link followed by unlink() causes concurrency
- * issues, while a simple rename() does not cause that, so be careful when
- * changing the logic of this routine.
- *
- * Returns 0 if the operation succeeded, -1 otherwise. Note that errno is not
- * valid upon return.
- */
-int
-durable_rename_excl(const char *oldfile, const char *newfile, int elevel)
-{
-	/*
-	 * Ensure that, if we crash directly after the rename/link, a file with
-	 * valid contents is moved into place.
-	 */
-	if (fsync_fname_ext(oldfile, false, false, elevel) != 0)
-		return -1;
-
-#ifdef HAVE_WORKING_LINK
-	if (link(oldfile, newfile) < 0)
-	{
-		ereport(elevel,
-				(errcode_for_file_access(),
-				 errmsg("could not link file \"%s\" to \"%s\": %m",
-						oldfile, newfile)));
-		return -1;
-	}
-	unlink(oldfile);
-#else
-	if (rename(oldfile, newfile) < 0)
-	{
-		ereport(elevel,
-				(errcode_for_file_access(),
-				 errmsg("could not rename file \"%s\" to \"%s\": %m",
-						oldfile, newfile)));
-		return -1;
-	}
-#endif
-
-	/*
-	 * Make change persistent in case of an OS crash, both the new entry and
-	 * its parent directory need to be flushed.
-	 */
-	if (fsync_fname_ext(newfile, false, false, elevel) != 0)
-		return -1;
-
-	/* Same for parent directory */
-	if (fsync_parent_path(newfile, elevel) != 0)
-		return -1;
-
-	return 0;
-}
-
-/*
  * InitFileAccess --- initialize this module during backend startup
  *
  * This is called during either normal or standalone backend start.
@@ -958,11 +887,7 @@ count_usable_fds(int max_to_probe, int *usable_fds, int *already_open)
 	fd = (int *) palloc(size * sizeof(int));
 
 #ifdef HAVE_GETRLIMIT
-#ifdef RLIMIT_NOFILE			/* most platforms use RLIMIT_NOFILE */
 	getrlimit_status = getrlimit(RLIMIT_NOFILE, &rlim);
-#else							/* but BSD doesn't ... */
-	getrlimit_status = getrlimit(RLIMIT_OFILE, &rlim);
-#endif							/* RLIMIT_NOFILE */
 	if (getrlimit_status != 0)
 		ereport(WARNING, (errmsg("getrlimit failed: %m")));
 #endif							/* HAVE_GETRLIMIT */
@@ -2130,7 +2055,7 @@ FileRead(File file, char *buffer, int amount, off_t offset,
 
 retry:
 	pgstat_report_wait_start(wait_event_info);
-	returnCode = pg_pread(vfdP->fd, buffer, amount, offset);
+	returnCode = pread(vfdP->fd, buffer, amount, offset);
 	pgstat_report_wait_end();
 
 	if (returnCode < 0)
@@ -2212,7 +2137,7 @@ FileWrite(File file, char *buffer, int amount, off_t offset,
 retry:
 	errno = 0;
 	pgstat_report_wait_start(wait_event_info);
-	returnCode = pg_pwrite(VfdCache[file].fd, buffer, amount, offset);
+	returnCode = pwrite(VfdCache[file].fd, buffer, amount, offset);
 	pgstat_report_wait_end();
 
 	/* if write didn't set errno, assume problem is no disk space */
@@ -3440,7 +3365,6 @@ SyncDataDirectory(void)
 	 */
 	xlog_is_symlink = false;
 
-#ifndef WIN32
 	{
 		struct stat st;
 
@@ -3452,10 +3376,6 @@ SyncDataDirectory(void)
 		else if (S_ISLNK(st.st_mode))
 			xlog_is_symlink = true;
 	}
-#else
-	if (pgwin32_is_junction("pg_wal"))
-		xlog_is_symlink = true;
-#endif
 
 #ifdef HAVE_SYNCFS
 	if (recovery_init_sync_method == RECOVERY_INIT_SYNC_METHOD_SYNCFS)
@@ -3829,7 +3749,7 @@ data_sync_elevel(int elevel)
 }
 
 /*
- * A convenience wrapper for pg_pwritev() that retries on partial write.  If an
+ * A convenience wrapper for pwritev() that retries on partial write.  If an
  * error is returned, it is unspecified how much has been written.
  */
 ssize_t
@@ -3849,7 +3769,7 @@ pg_pwritev_with_retry(int fd, const struct iovec *iov, int iovcnt, off_t offset)
 	for (;;)
 	{
 		/* Write as much as we can. */
-		part = pg_pwritev(fd, iov, iovcnt, offset);
+		part = pwritev(fd, iov, iovcnt, offset);
 		if (part < 0)
 			return -1;
 

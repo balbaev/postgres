@@ -155,10 +155,9 @@ CreateStatistics(CreateStatsStmt *stmt)
 
 	/*
 	 * If the node has a name, split it up and determine creation namespace.
-	 * If not (a possibility not considered by the grammar, but one which can
-	 * occur via the "CREATE TABLE ... (LIKE)" command), then we put the
-	 * object in the same namespace as the relation, and cons up a name for
-	 * it.
+	 * If not, put the object in the same namespace as the relation, and cons
+	 * up a name for it.  (This can happen either via "CREATE STATISTICS ..."
+	 * or via "CREATE TABLE ... (LIKE)".)
 	 */
 	if (stmt->defnames)
 		namespaceId = QualifiedNameGetCreationNamespace(stmt->defnames,
@@ -182,6 +181,10 @@ CreateStatistics(CreateStatsStmt *stmt)
 	{
 		if (stmt->if_not_exists)
 		{
+			/*
+			 * Since stats objects aren't members of extensions (see comments
+			 * below), no need for checkMembershipInCurrentExtension here.
+			 */
 			ereport(NOTICE,
 					(errcode(ERRCODE_DUPLICATE_OBJECT),
 					 errmsg("statistics object \"%s\" already exists, skipping",
@@ -467,7 +470,7 @@ CreateStatistics(CreateStatsStmt *stmt)
 	if (build_expressions)
 		types[ntypes++] = CharGetDatum(STATS_EXT_EXPRESSIONS);
 	Assert(ntypes > 0 && ntypes <= lengthof(types));
-	stxkind = construct_array(types, ntypes, CHAROID, 1, true, TYPALIGN_CHAR);
+	stxkind = construct_array_builtin(types, ntypes, CHAROID);
 
 	/* convert the expressions (if any) to a text datum */
 	if (stxexprs != NIL)

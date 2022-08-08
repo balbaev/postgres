@@ -279,15 +279,7 @@ extern PGDLLIMPORT bool VacuumCostActive;
 
 /* in tcop/postgres.c */
 
-#if defined(__ia64__) || defined(__ia64)
-typedef struct
-{
-	char	   *stack_base_ptr;
-	char	   *register_stack_base_ptr;
-} pg_stack_base_t;
-#else
 typedef char *pg_stack_base_t;
-#endif
 
 extern pg_stack_base_t set_stack_base(void);
 extern void restore_stack_base(pg_stack_base_t base);
@@ -457,8 +449,11 @@ extern PGDLLIMPORT AuxProcType MyAuxProcType;
 /* in utils/init/postinit.c */
 extern void pg_split_opts(char **argv, int *argcp, const char *optstr);
 extern void InitializeMaxBackends(void);
-extern void InitPostgres(const char *in_dbname, Oid dboid, const char *username,
-						 Oid useroid, char *out_dbname, bool override_allow_connections);
+extern void InitPostgres(const char *in_dbname, Oid dboid,
+						 const char *username, Oid useroid,
+						 bool load_session_libraries,
+						 bool override_allow_connections,
+						 char *out_dbname);
 extern void BaseInit(void);
 
 /* in utils/init/miscinit.c */

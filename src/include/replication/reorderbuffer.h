@@ -99,7 +99,7 @@ typedef struct ReorderBufferChange
 		struct
 		{
 			/* relation that has been changed */
-			RelFileNode relnode;
+			RelFileLocator rlocator;
 
 			/* no previously reassembled toast chunks are necessary anymore */
 			bool		clear_toast_afterwards;
@@ -145,7 +145,7 @@ typedef struct ReorderBufferChange
 		 */
 		struct
 		{
-			RelFileNode node;
+			RelFileLocator locator;
 			ItemPointerData tid;
 			CommandId	cmin;
 			CommandId	cmax;
@@ -262,7 +262,7 @@ typedef struct ReorderBufferTXN
 	 * aborted. This can be a
 	 * * plain commit record
 	 * * plain commit record, of a parent transaction
-	 * * prepared tansaction
+	 * * prepared transaction
 	 * * prepared transaction commit
 	 * * plain abort record
 	 * * prepared transaction abort
@@ -657,7 +657,7 @@ extern void ReorderBufferAddSnapshot(ReorderBuffer *, TransactionId, XLogRecPtr 
 extern void ReorderBufferAddNewCommandId(ReorderBuffer *, TransactionId, XLogRecPtr lsn,
 										 CommandId cid);
 extern void ReorderBufferAddNewTupleCids(ReorderBuffer *, TransactionId, XLogRecPtr lsn,
-										 RelFileNode node, ItemPointerData pt,
+										 RelFileLocator locator, ItemPointerData pt,
 										 CommandId cmin, CommandId cmax, CommandId combocid);
 extern void ReorderBufferAddInvalidations(ReorderBuffer *, TransactionId, XLogRecPtr lsn,
 										  Size nmsgs, SharedInvalidationMessage *msgs);

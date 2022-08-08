@@ -110,7 +110,7 @@ log_locus_callback(const char **filename, uint64 *lineno)
 	}
 }
 
-#ifdef HAVE_POSIX_DECL_SIGWAIT
+#ifndef WIN32
 static void
 empty_signal_handler(SIGNAL_ARGS)
 {
@@ -308,7 +308,7 @@ main(int argc, char *argv[])
 
 	psql_setup_cancel_handler();
 
-#ifdef HAVE_POSIX_DECL_SIGWAIT
+#ifndef WIN32
 
 	/*
 	 * do_watch() needs signal handlers installed (otherwise sigwait() will
@@ -426,7 +426,14 @@ main(int argc, char *argv[])
 
 		if (options.single_txn)
 		{
-			if ((res = PSQLexec("COMMIT")) == NULL)
+			/*
+			 * Rollback the contents of the single transaction if the caller
+			 * has set ON_ERROR_STOP and one of the steps has failed.  This
+			 * check needs to match the one done a couple of lines above.
+			 */
+			res = PSQLexec((successResult != EXIT_SUCCESS && pset.on_error_stop) ?
+						   "ROLLBACK" : "COMMIT");
+			if (res == NULL)
 			{
 				if (pset.on_error_stop)
 				{

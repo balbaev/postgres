@@ -1237,10 +1237,12 @@ JsonBehaviorType
 JsonCoercion
 JsonCommon
 JsonConstructorExpr
+JsonConstructorExprState
 JsonConstructorType
 JsonEncoding
 JsonExpr
 JsonExprOp
+JsonExprState
 JsonFormat
 JsonFormatType
 JsonFunc
@@ -2255,8 +2257,8 @@ ReindexObjectType
 ReindexParams
 ReindexStmt
 ReindexType
-RelFileNode
-RelFileNodeBackend
+RelFileLocator
+RelFileLocatorBackend
 RelIdCacheEnt
 RelInfo
 RelInfoArr
@@ -2274,8 +2276,8 @@ RelationPtr
 RelationSyncEntry
 RelcacheCallbackFunction
 ReleaseMatchCB
-RelfilenodeMapEntry
-RelfilenodeMapKey
+RelfilenumberMapEntry
+RelfilenumberMapKey
 Relids
 RelocationBufferInfo
 RelptrFreePageBtree
@@ -2831,8 +2833,14 @@ TupleHashTable
 TupleQueueReader
 TupleTableSlot
 TupleTableSlotOps
+TuplesortClusterArg
+TuplesortDatumArg
+TuplesortIndexArg
+TuplesortIndexBTreeArg
+TuplesortIndexHashArg
 TuplesortInstrumentation
 TuplesortMethod
+TuplesortPublic
 TuplesortSpaceType
 Tuplesortstate
 Tuplestorestate
@@ -3567,6 +3575,7 @@ printTextFormat
 printTextLineFormat
 printTextLineWrap
 printTextRule
+printXheaderWidthType
 printfunc
 priv_map
 process_file_callback_t
@@ -3877,7 +3886,7 @@ xl_xact_parsed_abort
 xl_xact_parsed_commit
 xl_xact_parsed_prepare
 xl_xact_prepare
-xl_xact_relfilenodes
+xl_xact_relfilelocators
 xl_xact_stats_item
 xl_xact_stats_items
 xl_xact_subxacts

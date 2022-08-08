@@ -631,7 +631,6 @@ transformColumnRef(ParseState *pstate, ColumnRef *cref)
 			{
 				Node	   *field1 = (Node *) linitial(cref->fields);
 
-				Assert(IsA(field1, String));
 				colname = strVal(field1);
 
 				/* Try to identify as an unqualified column */
@@ -664,7 +663,6 @@ transformColumnRef(ParseState *pstate, ColumnRef *cref)
 				Node	   *field1 = (Node *) linitial(cref->fields);
 				Node	   *field2 = (Node *) lsecond(cref->fields);
 
-				Assert(IsA(field1, String));
 				relname = strVal(field1);
 
 				/* Locate the referenced nsitem */
@@ -685,7 +683,6 @@ transformColumnRef(ParseState *pstate, ColumnRef *cref)
 					break;
 				}
 
-				Assert(IsA(field2, String));
 				colname = strVal(field2);
 
 				/* Try to identify as a column of the nsitem */
@@ -712,9 +709,7 @@ transformColumnRef(ParseState *pstate, ColumnRef *cref)
 				Node	   *field2 = (Node *) lsecond(cref->fields);
 				Node	   *field3 = (Node *) lthird(cref->fields);
 
-				Assert(IsA(field1, String));
 				nspname = strVal(field1);
-				Assert(IsA(field2, String));
 				relname = strVal(field2);
 
 				/* Locate the referenced nsitem */
@@ -735,7 +730,6 @@ transformColumnRef(ParseState *pstate, ColumnRef *cref)
 					break;
 				}
 
-				Assert(IsA(field3, String));
 				colname = strVal(field3);
 
 				/* Try to identify as a column of the nsitem */
@@ -764,11 +758,8 @@ transformColumnRef(ParseState *pstate, ColumnRef *cref)
 				Node	   *field4 = (Node *) lfourth(cref->fields);
 				char	   *catname;
 
-				Assert(IsA(field1, String));
 				catname = strVal(field1);
-				Assert(IsA(field2, String));
 				nspname = strVal(field2);
-				Assert(IsA(field3, String));
 				relname = strVal(field3);
 
 				/*
@@ -798,7 +789,6 @@ transformColumnRef(ParseState *pstate, ColumnRef *cref)
 					break;
 				}
 
-				Assert(IsA(field4, String));
 				colname = strVal(field4);
 
 				/* Try to identify as a column of the nsitem */
@@ -2150,6 +2140,14 @@ transformRowExpr(ParseState *pstate, RowExpr *r, bool allowDefault)
 	newr->args = transformExpressionList(pstate, r->args,
 										 pstate->p_expr_kind, allowDefault);
 
+	/* Disallow more columns than will fit in a tuple */
+	if (list_length(newr->args) > MaxTupleAttributeNumber)
+		ereport(ERROR,
+				(errcode(ERRCODE_TOO_MANY_COLUMNS),
+				 errmsg("ROW expressions can have at most %d entries",
+						MaxTupleAttributeNumber),
+				 parser_errposition(pstate, r->location)));
+
 	/* Barring later casting, we consider the type RECORD */
 	newr->row_typeid = RECORDOID;
 	newr->row_format = COERCE_IMPLICIT_CAST;
@@ -3457,7 +3455,7 @@ checkJsonOutputFormat(ParseState *pstate, const JsonFormat *format,
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("unsupported JSON encoding"),
-					 errhint("only UTF8 JSON encoding is supported"),
+					 errhint("Only UTF8 JSON encoding is supported."),
 					 parser_errposition(pstate, format->location)));
 	}
 }
@@ -3818,6 +3816,7 @@ transformJsonAggConstructor(ParseState *pstate, JsonAggConstructor *agg_ctor,
 		aggref->aggstar = false;
 		aggref->aggvariadic = false;
 		aggref->aggkind = AGGKIND_NORMAL;
+		aggref->aggpresorted = false;
 		/* agglevelsup will be set by transformAggregateCall */
 		aggref->aggsplit = AGGSPLIT_SIMPLE; /* planner might change this */
 		aggref->location = agg_ctor->location;
@@ -4574,7 +4573,25 @@ transformJsonSerializeExpr(ParseState *pstate, JsonSerializeExpr *expr)
 	JsonReturning *returning;
 
 	if (expr->output)
+	{
 		returning = transformJsonOutput(pstate, expr->output, true);
+
+		if (returning->typid != BYTEAOID)
+		{
+			char		typcategory;
+			bool		typispreferred;
+
+			get_type_category_preferred(returning->typid, &typcategory,
+										&typispreferred);
+			if (typcategory != TYPCATEGORY_STRING)
+				ereport(ERROR,
+						(errcode(ERRCODE_DATATYPE_MISMATCH),
+						 errmsg("cannot use RETURNING type %s in %s",
+								format_type_be(returning->typid),
+								"JSON_SERIALIZE()"),
+						 errhint("Try returning a string type or bytea.")));
+		}
+	}
 	else
 	{
 		/* RETURNING TEXT FORMAT JSON is by default */

@@ -578,8 +578,10 @@ CREATE [ UNIQUE ] INDEX [ CONCURRENTLY ] [ [ IF NOT EXISTS ] <replaceable class=
     </term>
     <listitem>
     <para>
-     Defines whether a summarization run is invoked for the previous page
+     Defines whether a summarization run is queued for the previous page
      range whenever an insertion is detected on the next one.
+     See <xref linkend="brin-operation"/> for more details.
+     The default is <literal>off</literal>.
     </para>
     </listitem>
    </varlistentry>
@@ -861,8 +863,6 @@ Indexes:
    Like any long-running transaction, <command>CREATE INDEX</command> on a
    table can affect which tuples can be removed by concurrent
    <command>VACUUM</command> on any other table.
-   Excepted from this are operations with the <literal>CONCURRENTLY</literal>
-   option for indexes that are not partial and do not index any expressions.
   </para>
 
   <para>
